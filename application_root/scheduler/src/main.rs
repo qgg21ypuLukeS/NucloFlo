@@ -14,11 +14,69 @@ struct Scheduler {
     join_handle: Vec<tokio::task::JoinHandle<()>>,
 }
 
-//enum to represent different Job states
+use std::path::PathBuf;
+
+struct BlastExecutionRequest {
+    job_id: u64,
+    blast_type: BlastType,
+    input: BlastInput,
+    parameters: BlastParameters,
+}
+
+struct BlastParameters;
+
+//enum to represent different Job states and other Enum variants
 enum JobState {
     Queued,
     Running,
     Completed,
+}
+
+enum BlastType {
+    BlastN,
+    BlastP,
+    BlastX,
+    TBlastN,
+    TBlastX,
+}
+
+enum BlastInput {
+    FilePath(PathBuf),
+    RawBytes(Vec<u8>),
+}
+
+enum BlastEngineError {
+    InvalidInput(String),
+    UnsupportedFormat,
+    DatabaseUnavailable,
+    ExecutionFailed(String),
+    Timeout,
+    EngineCrashed,
+}
+
+//trait to define behavior for Blast Engines plus enums and structs used in the trait
+#[async_trait::async_trait]
+trait BlastEngine {
+    async fn execute(
+        &self,
+        request: BlastExecutionRequest,
+    ) -> Result<BlastResult, BlastEngineError>;
+}
+
+
+enum ResultStatus {
+    Success,
+    Failed,
+}
+
+enum ResultOutput {
+    FilePath(PathBuf),
+}
+
+struct BlastResult {
+    job_id: u64,
+    status: ResultStatus,
+    output: ResultOutput,
 }
 
 // Implementing methods for the Scheduler struct
@@ -102,7 +160,7 @@ impl Scheduler {
                 //   - The task completes
                 //   - The Job is dropped
                 //   - All resources are cleaned up safely
-            }); // Store the handle IMMEDIATELY
+            }); // Store the join_handle IMMEDIATELY
             self.join_handle.push(join_handle);
         }
 
@@ -114,6 +172,12 @@ impl Scheduler {
         //
         // Worker tasks may still be running at this point.
         println!("Scheduler finished dispatching jobs");
+        for handle in self.join_handle {
+            let _ = handle.await;
+        }
+
+        
+        println!("All jobs completed");
     }
 }
 
