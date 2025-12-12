@@ -1,37 +1,70 @@
-// The code below is the precursor to the job scheduler application. It demonstrates basic Rust concepts such as functions, parameters, return values, and printing to the console.
+//todo 
+// add intelligent result deleting to save disk space
+// add job prioritization
 
+
+
+// Standard library imports
 use std::time::Duration;
-//Struct to represent a Job in the scheduler
-struct Job {
-    id: u32,
-    name: String,
-    schedule: Duration,
-    state: JobState,
-}
-
-struct Scheduler {
-    queue: Vec<Job>,
-    join_handle: Vec<tokio::task::JoinHandle<()>>,
-}
-
 use std::path::PathBuf;
+use std::sync::Arc;
 
-struct BlastExecutionRequest {
-    job_id: u64,
-    blast_type: BlastType,
-    input: BlastInput,
-    parameters: BlastParameters,
+// -----------------------------
+// JOB MODEL
+// -----------------------------
+
+// Represents a unit of work submitted to the scheduler
+struct Job {
+    id: u32,                 // Unique identifier for the job
+    name: String,            // Human-readable name (UI-facing)
+    schedule: Duration,      // Placeholder for scheduling logic (used earlier)
+    state: JobState,         // Current lifecycle state of the job
 }
 
-struct BlastParameters;
-
-//enum to represent different Job states and other Enum variants
+// Tracks where a job is in its lifecycle
 enum JobState {
     Queued,
     Running,
     Completed,
 }
 
+// -----------------------------
+// SCHEDULER
+// -----------------------------
+
+struct Scheduler {
+    // Queue of pending jobs
+    queue: Vec<Job>,
+
+    // Handles to all spawned async tasks so we can await completion
+    join_handle: Vec<tokio::task::JoinHandle<()>>,
+
+    // Shared engine instance (trait object wrapped in Arc)
+    //
+    // Arc:
+    //  - allows safe sharing across async tasks
+    // dyn BlastEngine:
+    //  - allows Python, Rust, Dummy engines interchangeably
+    engine: Arc<dyn BlastEngine + Send + Sync>,
+}
+
+// -----------------------------
+// BLAST EXECUTION REQUEST
+// -----------------------------
+
+// This is the *exact payload* sent from the scheduler to the engine
+struct BlastExecutionRequest {
+    job_id: u64,             // Used to associate results back to jobs
+    blast_type: BlastType,   // What kind of BLAST to run
+    input: BlastInput,       // Where the sequence data comes from
+    parameters: BlastParameters, // Placeholder for future BLAST flags
+}
+
+// Empty for now — grows later without breaking interfaces
+struct BlastParameters;
+
+// BLAST variants supported by the system
+#[derive(Debug)]
 enum BlastType {
     BlastN,
     BlastP,
@@ -40,11 +73,18 @@ enum BlastType {
     TBlastX,
 }
 
+// Input source for BLAST
 enum BlastInput {
-    FilePath(PathBuf),
-    RawBytes(Vec<u8>),
+    FilePath(PathBuf),   // Most common case (UI selects file)
+    RawBytes(Vec<u8>),   // Future: pasted sequences
 }
 
+// -----------------------------
+// ENGINE ERROR MODEL
+// -----------------------------
+
+// Structured errors returned by engines
+#[derive(Debug)]
 enum BlastEngineError {
     InvalidInput(String),
     UnsupportedFormat,
@@ -54,7 +94,11 @@ enum BlastEngineError {
     EngineCrashed,
 }
 
-//trait to define behavior for Blast Engines plus enums and structs used in the trait
+// -----------------------------
+// ENGINE TRAIT (CONTRACT)
+// -----------------------------
+
+// This defines what *every* BLAST engine must do
 #[async_trait::async_trait]
 trait BlastEngine {
     async fn execute(
@@ -63,12 +107,63 @@ trait BlastEngine {
     ) -> Result<BlastResult, BlastEngineError>;
 }
 
+// -----------------------------
+// DUMMY ENGINE (TEST ENGINE)
+// -----------------------------
+
+// Stateless dummy engine used to validate architecture
+struct DummyBlastEngine;
+
+#[async_trait::async_trait]
+impl BlastEngine for DummyBlastEngine {
+    async fn execute(
+        &self,
+        request: BlastExecutionRequest,
+    ) -> Result<BlastResult, BlastEngineError> {
+
+        // Log start (simulates engine startup)
+        println!("Dummy engine started job {}", request.job_id);
+
+        // Simulate expensive BLAST computation
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Create a fake output file path
+        let output_path = PathBuf::from(format!(
+            "dummy_result_job_{}.txt",
+            request.job_id
+        ));
+
+        // Fake BLAST output
+        let fake_output = format!(
+            "Dummy BLAST result\nJob ID: {}\nBlast Type: {:?}\n",
+            request.job_id,
+            request.blast_type
+        );
+
+        // Write output to disk
+        std::fs::write(&output_path, fake_output)
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+
+        // Return a successful result
+        Ok(BlastResult {
+            job_id: request.job_id,
+            status: ResultStatus::Success,
+            output: ResultOutput::FilePath(output_path),
+        })
+    }
+}
+
+// -----------------------------
+// RESULT MODEL
+// -----------------------------
 
 enum ResultStatus {
     Success,
     Failed,
 }
 
+// Result points to an output artifact, not raw data
+#[derive(Debug)]
 enum ResultOutput {
     FilePath(PathBuf),
 }
@@ -79,112 +174,81 @@ struct BlastResult {
     output: ResultOutput,
 }
 
-// Implementing methods for the Scheduler struct
+// -----------------------------
+// SCHEDULER IMPLEMENTATION
+// -----------------------------
 
 impl Scheduler {
 
-    // Constructor for Scheduler.
-    // Takes ownership of a vector of Job structs and stores it internally.
-    // After this call, the Scheduler is the sole owner of the job queue.
+    // Constructor — creates scheduler with a dummy engine
     fn new(jobs: Vec<Job>) -> Self {
-    Scheduler {
-        queue: jobs,
-        join_handle: Vec::new(),
+        Scheduler {
+            queue: jobs,
+            join_handle: Vec::new(),
+            engine: Arc::new(DummyBlastEngine),
+        }
     }
-}
 
-    // The main scheduler loop.
-    //
-    // `async` allows us to use `.await` inside this function.
-    // `mut self` means:
-    //   - This method takes ownership of the Scheduler
-    //   - The Scheduler is allowed to mutate its internal state
-    //
-    // We take ownership of `self` because once a scheduler starts running,
-    // we don't expect to use it elsewhere — it "consumes" itself.
+    // Main async scheduler loop
     async fn run(mut self) {
 
-        // Log that the scheduler has started
         println!("Scheduler started");
 
-        // Loop while there are still jobs in the queue.
-        //
-        // `self.queue.pop()`:
-        //   - Removes the last Job from the vector
-        //   - Returns `Some(job)` if a job exists
-        //   - Returns `None` if the queue is empty
-        //
-        // `while let Some(job) = ...` keeps looping
-        // until the queue is empty.
-        //
-        // IMPORTANT: `pop()` MOVES the Job out of the queue.
-        // The Scheduler no longer owns this Job after this line.
+        // Pop jobs until queue is empty
         while let Some(job) = self.queue.pop() {
 
-            // Log that the scheduler is dispatching this job
             println!("Dispatching job {}", job.id);
 
-            // Spawn a new asynchronous task to run the job.
-            //
-            // `tokio::spawn` schedules the task to run concurrently
-            // on the Tokio runtime.
-            //
-            // `async move` is CRITICAL:
-            //   - `async` creates an asynchronous future
-            //   - `move` transfers ownership of captured variables
-            //     (in this case, `job`) into the task
-            //
-            // This ensures the job can run independently of the scheduler
-            // without borrowing or lifetime issues.
-            let mut job = job;
-            job.state = JobState::Running;
-            let join_handle = tokio::spawn(async move {
-                // The worker task begins execution here
-                println!("Job {} started", job.id);
+            // Convert Job -> BlastExecutionRequest
+            let request = BlastExecutionRequest {
+                job_id: job.id as u64,
+                blast_type: BlastType::BlastN, // hardcoded for now
+                input: BlastInput::FilePath(PathBuf::from("dummy.fasta")),
+                parameters: BlastParameters,
+            };
 
-                // Simulate work by sleeping asynchronously.
-                //
-                // This does NOT block the thread.
-                // While this job is "working":
-                //   - Other jobs can run
-                //   - The scheduler can continue dispatching
-                //   - The runtime remains responsive
+            // Clone Arc so this task owns its engine reference
+            let engine = Arc::clone(&self.engine);
 
-                tokio::time::sleep(job.schedule).await;
-                job.state = JobState::Completed;
-                // When this task ends, the following happens automatically:
-                
-                println!("Job {} finished", job.id);
+            // Spawn async task for this job
+            let handle = tokio::spawn(async move {
 
-                // When this async block ends:
-                //   - The task completes
-                //   - The Job is dropped
-                //   - All resources are cleaned up safely
-            }); // Store the join_handle IMMEDIATELY
-            self.join_handle.push(join_handle);
+                match engine.execute(request).await {
+                    Ok(result) => {
+                        println!(
+                            "Job {} completed successfully. Output: {:?}",
+                            result.job_id, result.output
+                        );
+                    }
+                    Err(err) => {
+                        println!("Job {} failed: {:?}", job.id, err);
+                    }
+                }
+            });
+
+            // Store handle so we can await later
+            self.join_handle.push(handle);
         }
 
-        // This line executes once ALL jobs have been dispatched.
-        //
-        // IMPORTANT:
-        //   - This does NOT mean jobs are finished
-        //   - It only means the scheduler has handed them off
-        //
-        // Worker tasks may still be running at this point.
         println!("Scheduler finished dispatching jobs");
+
+        // Wait for all jobs to finish
         for handle in self.join_handle {
             let _ = handle.await;
         }
 
-        
         println!("All jobs completed");
     }
 }
 
+// -----------------------------
+// APPLICATION ENTRY POINT
+// -----------------------------
 
-// Entry point of the application
 #[tokio::main]
 async fn main() {
+
+    // Sample jobs (UI will create these later)
     let jobs = vec![
         Job {
             id: 1,
@@ -206,6 +270,7 @@ async fn main() {
         },
     ];
 
+    // Create scheduler and run it
     let scheduler = Scheduler::new(jobs);
     scheduler.run().await;
 }
