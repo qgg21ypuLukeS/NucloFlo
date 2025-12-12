@@ -45,7 +45,8 @@ struct Scheduler {
     //  - allows safe sharing across async tasks
     // dyn BlastEngine:
     //  - allows Python, Rust, Dummy engines interchangeably
-    engine: Arc<dyn BlastEngine + Send + Sync>,
+    small_engine: Arc<dyn BlastEngine + Send + Sync>,
+    large_engine: Arc<dyn BlastEngine + Send + Sync>,
 }
 
 // -----------------------------
@@ -105,6 +106,7 @@ trait BlastEngine {
         &self,
         request: BlastExecutionRequest,
     ) -> Result<BlastResult, BlastEngineError>;
+    fn name(&self) -> &'static str;
 }
 
 // -----------------------------
@@ -112,46 +114,55 @@ trait BlastEngine {
 // -----------------------------
 
 // Stateless dummy engine used to validate architecture
-struct DummyBlastEngine;
+struct SmallDummyEngine;
+struct LargeDummyEngine;
 
 #[async_trait::async_trait]
-impl BlastEngine for DummyBlastEngine {
+impl BlastEngine for SmallDummyEngine {
+    fn name(&self) -> &'static str {
+        "SmallDummyEngine"
+    }
+
     async fn execute(
         &self,
         request: BlastExecutionRequest,
     ) -> Result<BlastResult, BlastEngineError> {
+        println!("SMALL engine executing job {}", request.job_id);
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // Log start (simulates engine startup)
-        println!("Dummy engine started job {}", request.job_id);
-
-        // Simulate expensive BLAST computation
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Create a fake output file path
-        let output_path = PathBuf::from(format!(
-            "dummy_result_job_{}.txt",
-            request.job_id
-        ));
-
-        // Fake BLAST output
-        let fake_output = format!(
-            "Dummy BLAST result\nJob ID: {}\nBlast Type: {:?}\n",
-            request.job_id,
-            request.blast_type
-        );
-
-        // Write output to disk
-        std::fs::write(&output_path, fake_output)
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-
-        // Return a successful result
         Ok(BlastResult {
             job_id: request.job_id,
             status: ResultStatus::Success,
-            output: ResultOutput::FilePath(output_path),
+            output: ResultOutput::FilePath(
+                PathBuf::from(format!("small_result_{}.txt", request.job_id))
+            ),
         })
     }
 }
+
+#[async_trait::async_trait]
+impl BlastEngine for LargeDummyEngine {
+    fn name(&self) -> &'static str {
+        "LargeDummyEngine"
+    }
+
+    async fn execute(
+        &self,
+        request: BlastExecutionRequest,
+    ) -> Result<BlastResult, BlastEngineError> {
+        println!("LARGE engine executing job {}", request.job_id);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        Ok(BlastResult {
+            job_id: request.job_id,
+            status: ResultStatus::Success,
+            output: ResultOutput::FilePath(
+                PathBuf::from(format!("large_result_{}.txt", request.job_id))
+            ),
+        })
+    }
+}
+
 
 // -----------------------------
 // RESULT MODEL
@@ -182,10 +193,11 @@ impl Scheduler {
 
     // Constructor — creates scheduler with a dummy engine
     fn new(jobs: Vec<Job>) -> Self {
-        Scheduler {
-            queue: jobs,
-            join_handle: Vec::new(),
-            engine: Arc::new(DummyBlastEngine),
+    Scheduler {
+        queue: jobs,
+        join_handle: Vec::new(),
+        small_engine: Arc::new(SmallDummyEngine),
+        large_engine: Arc::new(LargeDummyEngine),
         }
     }
 
@@ -208,8 +220,23 @@ impl Scheduler {
             };
 
             // Clone Arc so this task owns its engine reference
-            let engine = Arc::clone(&self.engine);
+            let input_size_bytes = if job.id % 2 == 0 {
+                    2_000_000  // even jobs → LARGE
+                } else {
+                    100_000    // odd jobs → SMALL
+                }; // placeholder
 
+            let engine = if input_size_bytes < 1_000_000 {
+                Arc::clone(&self.small_engine)
+            } else {
+                Arc::clone(&self.large_engine)
+            };
+
+            println!(
+                "Job {} assigned to engine: {}",
+                job.id,
+                engine.name()
+            );
             // Spawn async task for this job
             let handle = tokio::spawn(async move {
 
