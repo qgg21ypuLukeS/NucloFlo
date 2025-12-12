@@ -6,10 +6,12 @@ struct Job {
     id: u32,
     name: String,
     schedule: Duration,
+    state: JobState,
 }
 
 struct Scheduler {
     queue: Vec<Job>,
+    join_handle: Vec<tokio::task::JoinHandle<()>>,
 }
 
 //enum to represent different Job states
@@ -27,10 +29,11 @@ impl Scheduler {
     // Takes ownership of a vector of Job structs and stores it internally.
     // After this call, the Scheduler is the sole owner of the job queue.
     fn new(jobs: Vec<Job>) -> Self {
-        Scheduler {
-            queue: jobs, // Move the jobs vector into the Scheduler
-        }
+    Scheduler {
+        queue: jobs,
+        join_handle: Vec::new(),
     }
+}
 
     // The main scheduler loop.
     //
@@ -75,8 +78,9 @@ impl Scheduler {
             //
             // This ensures the job can run independently of the scheduler
             // without borrowing or lifetime issues.
-            tokio::spawn(async move {
-
+            let mut job = job;
+            job.state = JobState::Running;
+            let join_handle = tokio::spawn(async move {
                 // The worker task begins execution here
                 println!("Job {} started", job.id);
 
@@ -87,16 +91,19 @@ impl Scheduler {
                 //   - Other jobs can run
                 //   - The scheduler can continue dispatching
                 //   - The runtime remains responsive
-                tokio::time::sleep(job.duration).await;
 
-                // Log job completion
+                tokio::time::sleep(job.schedule).await;
+                job.state = JobState::Completed;
+                // When this task ends, the following happens automatically:
+                
                 println!("Job {} finished", job.id);
 
                 // When this async block ends:
                 //   - The task completes
                 //   - The Job is dropped
                 //   - All resources are cleaned up safely
-            });
+            }); // Store the handle IMMEDIATELY
+            self.join_handle.push(join_handle);
         }
 
         // This line executes once ALL jobs have been dispatched.
@@ -108,4 +115,33 @@ impl Scheduler {
         // Worker tasks may still be running at this point.
         println!("Scheduler finished dispatching jobs");
     }
+}
+
+
+// Entry point of the application
+#[tokio::main]
+async fn main() {
+    let jobs = vec![
+        Job {
+            id: 1,
+            name: "Job A".to_string(),
+            schedule: Duration::from_secs(2),
+            state: JobState::Queued,
+        },
+        Job {
+            id: 2,
+            name: "Job B".to_string(),
+            schedule: Duration::from_secs(1),
+            state: JobState::Queued,
+        },
+        Job {
+            id: 3,
+            name: "Job C".to_string(),
+            schedule: Duration::from_secs(3),
+            state: JobState::Queued,
+        },
+    ];
+
+    let scheduler = Scheduler::new(jobs);
+    scheduler.run().await;
 }
