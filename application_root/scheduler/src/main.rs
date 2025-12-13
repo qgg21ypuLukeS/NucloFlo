@@ -9,6 +9,10 @@ use std::time::Duration;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+//Tokio imports
+use tokio::fs;
+
+
 // -----------------------------
 // JOB MODEL
 // -----------------------------
@@ -129,6 +133,25 @@ impl BlastEngine for SmallDummyEngine {
     ) -> Result<BlastResult, BlastEngineError> {
         println!("SMALL engine executing job {}", request.job_id);
         tokio::time::sleep(Duration::from_secs(1)).await;
+            // 1. Build the path
+        let mut path = PathBuf::from("..");
+            path.push("outputs");
+            path.push(format!(
+                "small_result_{}.txt",
+                request.job_id
+            ));
+
+            // 2. Write to it
+            fs::write(
+                &path,
+                format!(
+                    "Dummy BLAST result\nJob ID: {}\n",
+                    request.job_id
+                ),
+            )
+            .await
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+
 
         Ok(BlastResult {
             job_id: request.job_id,
@@ -152,7 +175,24 @@ impl BlastEngine for LargeDummyEngine {
     ) -> Result<BlastResult, BlastEngineError> {
         println!("LARGE engine executing job {}", request.job_id);
         tokio::time::sleep(Duration::from_secs(3)).await;
+                // 1. Build the path
+                let mut path = PathBuf::from("..");
+                path.push("outputs");
+                path.push(format!(
+                    "large_result_{}.txt",
+                    request.job_id
+                ));
 
+                // 2. Write to it
+                fs::write(
+                    &path,
+                    format!(
+                        "Dummy BLAST result\nJob ID: {}\n",
+                        request.job_id
+                    ),
+                )
+                .await
+                .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
         Ok(BlastResult {
             job_id: request.job_id,
             status: ResultStatus::Success,
