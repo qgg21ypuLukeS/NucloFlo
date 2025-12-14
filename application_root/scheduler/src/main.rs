@@ -120,6 +120,60 @@ trait BlastEngine {
 // Stateless dummy engine used to validate architecture
 struct SmallDummyEngine;
 struct LargeDummyEngine;
+struct RustProcessEngine;
+
+
+// Implement RustProcessEngine trait 
+
+#[async_trait::async_trait]
+impl BlastEngine for RustProcessEngine {
+    fn name(&self) -> &'static str {
+        "RustProcessEngine"
+    }
+
+    async fn execute(
+        &self,
+        request: BlastExecutionRequest,
+    ) -> Result<BlastResult, BlastEngineError> {
+
+        let job_id = request.job_id.to_string();
+
+        let output = tokio::process::Command::new("cargo")
+            .args(["run", "--quiet", "--"])
+            .arg(&job_id)
+            .current_dir("../engines/rust_engine")
+            .output()
+            .await
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+
+        // DEBUG — YOU NEED THIS
+        println!("--- Rust engine stdout ---");
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+        println!("--- Rust engine stderr ---");
+        println!("{}", String::from_utf8_lossy(&output.stderr));
+
+        if !output.status.success() {
+            return Err(BlastEngineError::EngineCrashed);
+        }
+
+        // Write output file
+        let mut path = PathBuf::from("..");
+        path.push("outputs");
+        path.push(format!("rust_engine_{}.txt", request.job_id));
+
+        fs::write(&path, &output.stdout)
+            .await
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+
+        Ok(BlastResult {
+            job_id: request.job_id,
+            status: ResultStatus::Success,
+            output: ResultOutput::FilePath(path),
+        })
+    }
+}
+
+//
 
 #[async_trait::async_trait]
 impl BlastEngine for SmallDummyEngine {
@@ -237,7 +291,7 @@ impl Scheduler {
         queue: jobs,
         join_handle: Vec::new(),
         small_engine: Arc::new(SmallDummyEngine),
-        large_engine: Arc::new(LargeDummyEngine),
+        large_engine: Arc::new(RustProcessEngine),
         }
     }
 

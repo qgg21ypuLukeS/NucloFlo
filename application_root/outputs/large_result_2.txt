@@ -1,2 +1,0 @@
-Dummy BLAST result
-Job ID: 2
