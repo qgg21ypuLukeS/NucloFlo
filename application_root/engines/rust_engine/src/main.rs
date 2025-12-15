@@ -1,14 +1,14 @@
-use std::fs;
-use std::path::PathBuf;
 use std::env;
-
+use std::fs;
 
 fn main() {
-    // Scheduler will pass job_id as first argument
-    let job_id = env::args()
-        .nth(1)
-        .expect("job_id not provided");
+    let args: Vec<String> = env::args().collect();
+    let job_id = &args[1];
+    let input_path = &args[2];
 
-    // Dummy "work"
-    println!("Rust engine processed job {}", job_id);
+    // Read input file (absolute path)
+    let contents = fs::read_to_string(input_path)
+        .expect(&format!("Failed to read input: {}", input_path));
+
+    println!("RUST engine executing job {} with input length {}", job_id, contents.len());
 }

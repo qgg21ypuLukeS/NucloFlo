@@ -1,277 +1,164 @@
-//todo 
-// add intelligent result deleting to save disk space
-// add job prioritization
-
-
-
 // Standard library imports
-use std::time::Duration;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-//Tokio imports
 use tokio::fs;
-
+use tokio::process::Command; // Async process execution
 
 // -----------------------------
 // JOB MODEL
 // -----------------------------
-
-// Represents a unit of work submitted to the scheduler
 struct Job {
-    id: u32,                 // Unique identifier for the job
-    name: String,            // Human-readable name (UI-facing)
-    schedule: Duration,      // Placeholder for scheduling logic (used earlier)
-    state: JobState,         // Current lifecycle state of the job
+    id: u32,                 // Unique job identifier
+    name: String,            // UI-facing name
+    schedule: std::time::Duration, // Placeholder for future scheduling logic
+    state: JobState,         // Job lifecycle state (queued/running/completed)
+    input_path: PathBuf,     // Absolute path to input file
 }
 
-// Tracks where a job is in its lifecycle
-enum JobState {
-    Queued,
-    Running,
-    Completed,
-}
-
-// -----------------------------
-// SCHEDULER
-// -----------------------------
-
-struct Scheduler {
-    // Queue of pending jobs
-    queue: Vec<Job>,
-
-    // Handles to all spawned async tasks so we can await completion
-    join_handle: Vec<tokio::task::JoinHandle<()>>,
-
-    // Shared engine instance (trait object wrapped in Arc)
-    //
-    // Arc:
-    //  - allows safe sharing across async tasks
-    // dyn BlastEngine:
-    //  - allows Python, Rust, Dummy engines interchangeably
-    small_engine: Arc<dyn BlastEngine + Send + Sync>,
-    large_engine: Arc<dyn BlastEngine + Send + Sync>,
-}
+enum JobState { Queued, Running, Completed }
 
 // -----------------------------
 // BLAST EXECUTION REQUEST
 // -----------------------------
-
-// This is the *exact payload* sent from the scheduler to the engine
 struct BlastExecutionRequest {
-    job_id: u64,             // Used to associate results back to jobs
-    blast_type: BlastType,   // What kind of BLAST to run
-    input: BlastInput,       // Where the sequence data comes from
-    parameters: BlastParameters, // Placeholder for future BLAST flags
+    job_id: u64,
+    blast_type: BlastType,
+    input: BlastInput,
+    parameters: BlastParameters,
 }
 
-// Empty for now — grows later without breaking interfaces
 struct BlastParameters;
 
-// BLAST variants supported by the system
 #[derive(Debug)]
-enum BlastType {
-    BlastN,
-    BlastP,
-    BlastX,
-    TBlastN,
-    TBlastX,
-}
+enum BlastType { BlastN, BlastP, BlastX, TBlastN, TBlastX }
 
-// Input source for BLAST
-enum BlastInput {
-    FilePath(PathBuf),   // Most common case (UI selects file)
-    RawBytes(Vec<u8>),   // Future: pasted sequences
-}
+enum BlastInput { FilePath(PathBuf), RawBytes(Vec<u8>) }
 
-// -----------------------------
-// ENGINE ERROR MODEL
-// -----------------------------
-
-// Structured errors returned by engines
 #[derive(Debug)]
 enum BlastEngineError {
-    InvalidInput(String),
+    InvalidInput(()),
     UnsupportedFormat,
     DatabaseUnavailable,
-    ExecutionFailed(String),
+    ExecutionFailed(()),
     Timeout,
-    EngineCrashed,
 }
 
 // -----------------------------
-// ENGINE TRAIT (CONTRACT)
+// ENGINE TRAIT
 // -----------------------------
-
-// This defines what *every* BLAST engine must do
 #[async_trait::async_trait]
 trait BlastEngine {
-    async fn execute(
-        &self,
-        request: BlastExecutionRequest,
-    ) -> Result<BlastResult, BlastEngineError>;
+    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError>;
     fn name(&self) -> &'static str;
 }
 
 // -----------------------------
-// DUMMY ENGINE (TEST ENGINE)
+// DUMMY ENGINES
 // -----------------------------
-
-// Stateless dummy engine used to validate architecture
 struct SmallDummyEngine;
 struct LargeDummyEngine;
 struct RustProcessEngine;
 
-
-// Implement RustProcessEngine trait 
-
 #[async_trait::async_trait]
 impl BlastEngine for RustProcessEngine {
-    fn name(&self) -> &'static str {
-        "RustProcessEngine"
-    }
+    fn name(&self) -> &'static str { "RUST engine" }
 
-    async fn execute(
-        &self,
-        request: BlastExecutionRequest,
-    ) -> Result<BlastResult, BlastEngineError> {
+    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
+        println!("RUST engine executing job {}", request.job_id);
 
-        let job_id = request.job_id.to_string();
+        // Absolute input path
+        let input_path = match request.input {
+            BlastInput::FilePath(ref path) => path,
+            _ => return Err(BlastEngineError::InvalidInput(())),
+        };
 
-        let output = tokio::process::Command::new("cargo")
+        // Absolute path to output file
+        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
+        fs::create_dir_all(&output_path).await.unwrap(); // Ensure outputs folder exists
+        output_path.push(format!("rust_engine_{}.txt", request.job_id));
+
+        // Run the engine process (example)
+        let output = Command::new("cargo")
             .args(["run", "--quiet", "--"])
-            .arg(&job_id)
-            .current_dir("../engines/rust_engine")
+            .arg(request.job_id.to_string())
+            .arg(input_path) // pass absolute input
+            .current_dir("/home/lukesal/BioClick/NucloFlo/application_root/engines/rust_engine")
             .output()
             .await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
 
-        // DEBUG — YOU NEED THIS
-        println!("--- Rust engine stdout ---");
-        println!("{}", String::from_utf8_lossy(&output.stdout));
-        println!("--- Rust engine stderr ---");
-        println!("{}", String::from_utf8_lossy(&output.stderr));
+        println!("--- Engine stdout ---\n{}", String::from_utf8_lossy(&output.stdout));
+        println!("--- Engine stderr ---\n{}", String::from_utf8_lossy(&output.stderr));
 
         if !output.status.success() {
-            return Err(BlastEngineError::EngineCrashed);
+            return Err(BlastEngineError::ExecutionFailed(()));
         }
 
-        // Write output file
-        let mut path = PathBuf::from("..");
-        path.push("outputs");
-        path.push(format!("rust_engine_{}.txt", request.job_id));
-
-        fs::write(&path, &output.stdout)
+        fs::write(&output_path, &output.stdout)
             .await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
 
         Ok(BlastResult {
             job_id: request.job_id,
             status: ResultStatus::Success,
-            output: ResultOutput::FilePath(path),
+            output: ResultOutput::FilePath(output_path),
         })
     }
 }
 
-//
-
 #[async_trait::async_trait]
 impl BlastEngine for SmallDummyEngine {
-    fn name(&self) -> &'static str {
-        "SmallDummyEngine"
-    }
+    fn name(&self) -> &'static str { "SmallDummyEngine" }
 
-    async fn execute(
-        &self,
-        request: BlastExecutionRequest,
-    ) -> Result<BlastResult, BlastEngineError> {
+    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
         println!("SMALL engine executing job {}", request.job_id);
-        tokio::time::sleep(Duration::from_secs(1)).await;
-            // 1. Build the path
-        let mut path = PathBuf::from("..");
-            path.push("outputs");
-            path.push(format!(
-                "small_result_{}.txt",
-                request.job_id
-            ));
 
-            // 2. Write to it
-            fs::write(
-                &path,
-                format!(
-                    "Dummy BLAST result\nJob ID: {}\n",
-                    request.job_id
-                ),
-            )
+        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
+        fs::create_dir_all(&output_path).await.unwrap();
+        output_path.push(format!("small_result_{}.txt", request.job_id));
+
+        fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
             .await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-
+            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
 
         Ok(BlastResult {
             job_id: request.job_id,
             status: ResultStatus::Success,
-            output: ResultOutput::FilePath(
-                PathBuf::from(format!("small_result_{}.txt", request.job_id))
-            ),
+            output: ResultOutput::FilePath(output_path),
         })
     }
 }
 
 #[async_trait::async_trait]
 impl BlastEngine for LargeDummyEngine {
-    fn name(&self) -> &'static str {
-        "LargeDummyEngine"
-    }
+    fn name(&self) -> &'static str { "LargeDummyEngine" }
 
-    async fn execute(
-        &self,
-        request: BlastExecutionRequest,
-    ) -> Result<BlastResult, BlastEngineError> {
+    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
         println!("LARGE engine executing job {}", request.job_id);
-        tokio::time::sleep(Duration::from_secs(3)).await;
-                // 1. Build the path
-                let mut path = PathBuf::from("..");
-                path.push("outputs");
-                path.push(format!(
-                    "large_result_{}.txt",
-                    request.job_id
-                ));
 
-                // 2. Write to it
-                fs::write(
-                    &path,
-                    format!(
-                        "Dummy BLAST result\nJob ID: {}\n",
-                        request.job_id
-                    ),
-                )
-                .await
-                .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
+        fs::create_dir_all(&output_path).await.unwrap();
+        output_path.push(format!("large_result_{}.txt", request.job_id));
+
+        fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
+            .await
+            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
+
         Ok(BlastResult {
             job_id: request.job_id,
             status: ResultStatus::Success,
-            output: ResultOutput::FilePath(
-                PathBuf::from(format!("large_result_{}.txt", request.job_id))
-            ),
+            output: ResultOutput::FilePath(output_path),
         })
     }
 }
 
-
 // -----------------------------
-// RESULT MODEL
+// RESULTS
 // -----------------------------
+enum ResultStatus { Success, Failed }
 
-enum ResultStatus {
-    Success,
-    Failed,
-}
-
-// Result points to an output artifact, not raw data
 #[derive(Debug)]
-enum ResultOutput {
-    FilePath(PathBuf),
-}
+enum ResultOutput { FilePath(PathBuf) }
 
 struct BlastResult {
     job_id: u64,
@@ -280,80 +167,58 @@ struct BlastResult {
 }
 
 // -----------------------------
-// SCHEDULER IMPLEMENTATION
+// SCHEDULER
 // -----------------------------
+struct Scheduler {
+    queue: Vec<Job>,
+    join_handle: Vec<tokio::task::JoinHandle<()>>,
+    small_engine: Arc<dyn BlastEngine + Send + Sync>,
+    large_engine: Arc<dyn BlastEngine + Send + Sync>,
+}
 
 impl Scheduler {
-
-    // Constructor — creates scheduler with a dummy engine
     fn new(jobs: Vec<Job>) -> Self {
-    Scheduler {
-        queue: jobs,
-        join_handle: Vec::new(),
-        small_engine: Arc::new(SmallDummyEngine),
-        large_engine: Arc::new(RustProcessEngine),
+        Self {
+            queue: jobs,
+            join_handle: vec![],
+            small_engine: Arc::new(SmallDummyEngine),
+            large_engine: Arc::new(RustProcessEngine),
         }
     }
 
-    // Main async scheduler loop
     async fn run(mut self) {
-
         println!("Scheduler started");
 
-        // Pop jobs until queue is empty
         while let Some(job) = self.queue.pop() {
-
             println!("Dispatching job {}", job.id);
 
-            // Convert Job -> BlastExecutionRequest
             let request = BlastExecutionRequest {
                 job_id: job.id as u64,
-                blast_type: BlastType::BlastN, // hardcoded for now
-                input: BlastInput::FilePath(PathBuf::from("dummy.fasta")),
+                blast_type: BlastType::BlastN,
+                input: BlastInput::FilePath(job.input_path.clone()),
                 parameters: BlastParameters,
             };
 
-            // Clone Arc so this task owns its engine reference
-            let input_size_bytes = if job.id % 2 == 0 {
-                    2_000_000  // even jobs → LARGE
-                } else {
-                    100_000    // odd jobs → SMALL
-                }; // placeholder
-
-            let engine = if input_size_bytes < 1_000_000 {
-                Arc::clone(&self.small_engine)
-            } else {
+            let engine = if job.id % 2 == 0 {
                 Arc::clone(&self.large_engine)
+            } else {
+                Arc::clone(&self.small_engine)
             };
 
-            println!(
-                "Job {} assigned to engine: {}",
-                job.id,
-                engine.name()
-            );
-            // Spawn async task for this job
-            let handle = tokio::spawn(async move {
+            println!("Job {} assigned to engine: {}", job.id, engine.name());
 
+            let handle = tokio::spawn(async move {
                 match engine.execute(request).await {
-                    Ok(result) => {
-                        println!(
-                            "Job {} completed successfully. Output: {:?}",
-                            result.job_id, result.output
-                        );
-                    }
-                    Err(err) => {
-                        println!("Job {} failed: {:?}", job.id, err);
-                    }
+                    Ok(result) => println!("Job {} completed successfully. Output: {:?}", result.job_id, result.output),
+                    Err(err) => println!("Job {} failed: {:?}", job.id, err),
                 }
             });
 
-            // Store handle so we can await later
             self.join_handle.push(handle);
         }
 
         println!("Scheduler finished dispatching jobs");
 
-        // Wait for all jobs to finish
         for handle in self.join_handle {
             let _ = handle.await;
         }
@@ -363,35 +228,20 @@ impl Scheduler {
 }
 
 // -----------------------------
-// APPLICATION ENTRY POINT
+// MAIN ENTRY
 // -----------------------------
-
 #[tokio::main]
 async fn main() {
-
-    // Sample jobs (UI will create these later)
     let jobs = vec![
         Job {
-            id: 1,
-            name: "Job A".to_string(),
-            schedule: Duration::from_secs(2),
-            state: JobState::Queued,
-        },
-        Job {
             id: 2,
-            name: "Job B".to_string(),
-            schedule: Duration::from_secs(1),
+            name: "Test BLAST Job".to_string(),
+            schedule: std::time::Duration::from_secs(0),
             state: JobState::Queued,
-        },
-        Job {
-            id: 3,
-            name: "Job C".to_string(),
-            schedule: Duration::from_secs(3),
-            state: JobState::Queued,
-        },
+            input_path: PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/inputs/job_1.fasta"),
+        }
     ];
 
-    // Create scheduler and run it
     let scheduler = Scheduler::new(jobs);
     scheduler.run().await;
 }
