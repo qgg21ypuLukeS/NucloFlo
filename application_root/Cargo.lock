@@ -114,6 +114,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_engine"
+version = "0.1.0"
+
+[[package]]
 name = "scheduler"
 version = "0.1.0"
 dependencies = [

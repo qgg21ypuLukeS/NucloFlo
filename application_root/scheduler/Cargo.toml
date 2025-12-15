@@ -1,8 +1,12 @@
 [package]
-name = "scheduler"
+name = "scheduler" # Use a unique name
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# You need these dependencies for your existing main.rs code
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+
+# If your scheduler needs to interact with your 'engines' crate as a library, 
+# you would add it here: engines = { path = "../engines" }

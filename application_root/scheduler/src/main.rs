@@ -206,7 +206,6 @@ impl BlastEngine for LargeDummyEngine {
 // SCHEDULER IMPLEMENTATION
 // -----------------------------
 
-
 impl Scheduler {
     fn new(jobs: Vec<Job>) -> Self {
         Self {
@@ -268,8 +267,11 @@ async fn main() {
             id: 2,
             name: "Test BLAST Job".to_string(),
             schedule: std::time::Duration::from_secs(0),
+            program: BlastType::BlastN,
+            database: "nt".to_string(),
             state: JobState::Queued,
-            input_path: PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/inputs/job_1.fasta"),
+            input_path: PathBuf::from("../inputs/job_1.fasta"),
+            output_path: PathBuf::from("../../outputs/job_1_output.txt"),
         }
     ];
 
