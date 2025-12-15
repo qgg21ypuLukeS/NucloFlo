@@ -121,7 +121,7 @@ impl BlastEngine for RustProcessEngine {
         };
 
         // Absolute path to output file
-        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
+        let mut output_path = PathBuf::from("application_root/outputs");
         fs::create_dir_all(&output_path).await.unwrap(); // Ensure outputs folder exists
         output_path.push(format!("rust_engine_{}.txt", request.job_id));
 
@@ -130,7 +130,7 @@ impl BlastEngine for RustProcessEngine {
             .args(["run", "--quiet", "--"])
             .arg(request.job_id.to_string())
             .arg(input_path) // pass absolute input
-            .current_dir("/home/lukesal/BioClick/NucloFlo/application_root/engines/rust_engine")
+            .current_dir("/home/lukesal/BioClick/NucloFlo/application_root/rust_engine")
             .output()
             .await
             .map_err(|_| BlastEngineError::ExecutionFailed(()))?;

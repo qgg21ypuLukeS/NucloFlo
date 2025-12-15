@@ -1,0 +1,25 @@
+project-root/
+│
+├─ electron/                # UI layer
+│   ├─ src/                 # React/Vue/Svelte code
+│   ├─ main/                # Electron main process
+│   └─ package.json
+│
+├─ engines/
+│   ├─ rust_engine/
+│   │    ├─ src/
+│   │    └─ Cargo.toml
+│   └─ python_engine/
+│        ├─ engine/
+│        └─ requirements.txt
+│
+├─ scheduler/               # Rust job scheduler
+│    ├─ src/
+│    └─ Cargo.toml
+│
+├─ shared/
+│    ├─ models/             # Shared JSON schemas
+│    ├─ protocols/          # IPC formats
+│    └─ utils/              # Logging, config
+│
+└─ docs/                    # Documentation
