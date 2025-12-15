@@ -5,7 +5,7 @@ use tokio::fs;
 use tokio::process::Command; // Async process execution
 
 // -----------------------------
-// JOB MODEL
+// Structs
 // -----------------------------
 struct Job {
     id: u32,                 // Unique job identifier
@@ -13,13 +13,12 @@ struct Job {
     schedule: std::time::Duration, // Placeholder for future scheduling logic
     state: JobState,         // Job lifecycle state (queued/running/completed)
     input_path: PathBuf,     // Absolute path to input file
+    database: String,       // Database to use
+    output_path: PathBuf,    // Absolute path to output file
+    program: BlastType,        // BLAST program to use
 }
 
-enum JobState { Queued, Running, Completed }
-
-// -----------------------------
-// BLAST EXECUTION REQUEST
-// -----------------------------
+// BlastExectutionRequest
 struct BlastExecutionRequest {
     job_id: u64,
     blast_type: BlastType,
@@ -27,13 +26,68 @@ struct BlastExecutionRequest {
     parameters: BlastParameters,
 }
 
+// Process Engines struct
+struct RustProcessEngine;
+struct SmallDummyEngine;
+struct LargeDummyEngine;
+
+// Blast Parameters placeholder
 struct BlastParameters;
 
+// Scheduler struct
+struct Scheduler {
+    queue: Vec<Job>,
+    join_handle: Vec<tokio::task::JoinHandle<()>>,
+    small_engine: Arc<dyn BlastEngine + Send + Sync>,
+    large_engine: Arc<dyn BlastEngine + Send + Sync>, //ARC for thread safety, allows for shared ownership
+}
+
+// Blast Result struct
+struct BlastResult {
+    job_id: u64,
+    status: ResultStatus,
+    output: ResultOutput,
+}
+
+// -----------------------------
+// Enums
+// -----------------------------
+
+// Job State Enum
+enum JobState { 
+    Queued, 
+    Running, 
+    Completed 
+}
+
+// Blast Type Enum
 #[derive(Debug)]
-enum BlastType { BlastN, BlastP, BlastX, TBlastN, TBlastX }
+enum BlastType { 
+    BlastN, 
+    BlastP, 
+    BlastX, 
+    TBlastN,
+    TBlastX 
+}
 
-enum BlastInput { FilePath(PathBuf), RawBytes(Vec<u8>) }
+// Blast Input Enum
+#[derive(Debug)]
+enum BlastInput { 
+    FilePath(PathBuf), 
+    RawBytes(Vec<u8>) 
+}
 
+// Result Status Enum
+enum ResultStatus { 
+    Success,
+    Failed 
+}
+
+// Result Output Enum
+#[derive(Debug)]
+enum ResultOutput { FilePath(PathBuf) }
+
+// BlastEngine Error Enum
 #[derive(Debug)]
 enum BlastEngineError {
     InvalidInput(()),
@@ -44,7 +98,7 @@ enum BlastEngineError {
 }
 
 // -----------------------------
-// ENGINE TRAIT
+// Traits 
 // -----------------------------
 #[async_trait::async_trait]
 trait BlastEngine {
@@ -52,12 +106,6 @@ trait BlastEngine {
     fn name(&self) -> &'static str;
 }
 
-// -----------------------------
-// DUMMY ENGINES
-// -----------------------------
-struct SmallDummyEngine;
-struct LargeDummyEngine;
-struct RustProcessEngine;
 
 #[async_trait::async_trait]
 impl BlastEngine for RustProcessEngine {
@@ -152,29 +200,12 @@ impl BlastEngine for LargeDummyEngine {
     }
 }
 
-// -----------------------------
-// RESULTS
-// -----------------------------
-enum ResultStatus { Success, Failed }
 
-#[derive(Debug)]
-enum ResultOutput { FilePath(PathBuf) }
-
-struct BlastResult {
-    job_id: u64,
-    status: ResultStatus,
-    output: ResultOutput,
-}
 
 // -----------------------------
-// SCHEDULER
+// SCHEDULER IMPLEMENTATION
 // -----------------------------
-struct Scheduler {
-    queue: Vec<Job>,
-    join_handle: Vec<tokio::task::JoinHandle<()>>,
-    small_engine: Arc<dyn BlastEngine + Send + Sync>,
-    large_engine: Arc<dyn BlastEngine + Send + Sync>,
-}
+
 
 impl Scheduler {
     fn new(jobs: Vec<Job>) -> Self {
