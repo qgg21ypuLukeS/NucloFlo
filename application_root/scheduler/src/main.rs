@@ -1,24 +1,24 @@
 // Standard library imports
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::env;
 use tokio::fs;
-use tokio::process::Command; // Async process execution
+use tokio::process::Command;
 
 // -----------------------------
 // Structs
 // -----------------------------
 struct Job {
-    id: u32,                 // Unique job identifier
-    name: String,            // UI-facing name
-    schedule: std::time::Duration, // Placeholder for future scheduling logic
-    state: JobState,         // Job lifecycle state (queued/running/completed)
-    input_path: PathBuf,     // Absolute path to input file
-    database: String,       // Database to use
-    output_path: PathBuf,    // Absolute path to output file
-    program: BlastType,        // BLAST program to use
+    id: u32,
+    name: String,
+    schedule: std::time::Duration,
+    state: JobState,
+    input_path: PathBuf,
+    database: String,
+    output_path: PathBuf,
+    program: BlastType,
 }
 
-// BlastExectutionRequest
 struct BlastExecutionRequest {
     job_id: u64,
     blast_type: BlastType,
@@ -26,23 +26,21 @@ struct BlastExecutionRequest {
     parameters: BlastParameters,
 }
 
-// Process Engines struct
 struct RustProcessEngine;
 struct SmallDummyEngine;
 struct LargeDummyEngine;
+struct PythonBlastEngine;
 
-// Blast Parameters placeholder
 struct BlastParameters;
 
-// Scheduler struct
 struct Scheduler {
     queue: Vec<Job>,
     join_handle: Vec<tokio::task::JoinHandle<()>>,
     small_engine: Arc<dyn BlastEngine + Send + Sync>,
-    large_engine: Arc<dyn BlastEngine + Send + Sync>, //ARC for thread safety, allows for shared ownership
+    large_engine: Arc<dyn BlastEngine + Send + Sync>,
+    python_engine: Arc<dyn BlastEngine + Send + Sync>,
 }
 
-// Blast Result struct
 struct BlastResult {
     job_id: u64,
     status: ResultStatus,
@@ -53,15 +51,13 @@ struct BlastResult {
 // Enums
 // -----------------------------
 
-// Job State Enum
 enum JobState { 
     Queued, 
     Running, 
     Completed 
 }
 
-// Blast Type Enum
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum BlastType { 
     BlastN, 
     BlastP, 
@@ -70,30 +66,40 @@ enum BlastType {
     TBlastX 
 }
 
-// Blast Input Enum
+impl BlastType {
+    fn to_string(&self) -> &str {
+        match self {
+            BlastType::BlastN => "blastn",
+            BlastType::BlastP => "blastp",
+            BlastType::BlastX => "blastx",
+            BlastType::TBlastN => "tblastn",
+            BlastType::TBlastX => "tblastx",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum BlastInput { 
     FilePath(PathBuf), 
     RawBytes(Vec<u8>) 
 }
 
-// Result Status Enum
 enum ResultStatus { 
     Success,
     Failed 
 }
 
-// Result Output Enum
 #[derive(Debug)]
-enum ResultOutput { FilePath(PathBuf) }
+enum ResultOutput { 
+    FilePath(PathBuf) 
+}
 
-// BlastEngine Error Enum
 #[derive(Debug)]
 enum BlastEngineError {
-    InvalidInput(()),
+    InvalidInput(String),
     UnsupportedFormat,
     DatabaseUnavailable,
-    ExecutionFailed(()),
+    ExecutionFailed(String),
     Timeout,
 }
 
@@ -106,45 +112,76 @@ trait BlastEngine {
     fn name(&self) -> &'static str;
 }
 
-
+// -----------------------------
+// PYTHON BLAST ENGINE (NEW!)
+// -----------------------------
 #[async_trait::async_trait]
-impl BlastEngine for RustProcessEngine {
-    fn name(&self) -> &'static str { "RUST engine" }
+impl BlastEngine for PythonBlastEngine {
+    fn name(&self) -> &'static str { "Python BLAST Engine" }
 
     async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
-        println!("RUST engine executing job {}", request.job_id);
+        println!("🐍 Python engine executing job {}", request.job_id);
 
-        // Absolute input path
         let input_path = match request.input {
             BlastInput::FilePath(ref path) => path,
-            _ => return Err(BlastEngineError::InvalidInput(())),
+            _ => return Err(BlastEngineError::InvalidInput(
+                "Python engine requires file input".to_string()
+            )),
         };
 
-        // Absolute path to output file
-        let mut output_path = PathBuf::from("application_root/outputs");
-        fs::create_dir_all(&output_path).await.unwrap(); // Ensure outputs folder exists
-        output_path.push(format!("rust_engine_{}.txt", request.job_id));
-
-        // Run the engine process (example)
-        let output = Command::new("cargo")
-            .args(["run", "--quiet", "--"])
-            .arg(request.job_id.to_string())
-            .arg(input_path) // pass absolute input
-            .current_dir("/home/lukesal/BioClick/NucloFlo/application_root/rust_engine")
-            .output()
-            .await
-            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
-
-        println!("--- Engine stdout ---\n{}", String::from_utf8_lossy(&output.stdout));
-        println!("--- Engine stderr ---\n{}", String::from_utf8_lossy(&output.stderr));
-
-        if !output.status.success() {
-            return Err(BlastEngineError::ExecutionFailed(()));
+        if !input_path.exists() {
+            return Err(BlastEngineError::InvalidInput(
+                format!("Input file does not exist: {:?}", input_path)
+            ));
         }
 
-        fs::write(&output_path, &output.stdout)
+        // Get app root and build paths
+        let exe_path = env::current_exe()
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Cannot get exe path: {}", e)))?;
+        let app_root = exe_path.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
+        
+        let output_dir = app_root.join("outputs");
+        fs::create_dir_all(&output_dir).await
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Cannot create output dir: {}", e)))?;
+        
+        let output_path = output_dir.join(format!("python_blast_{}.xml", request.job_id));
+
+        println!("📄 Input: {:?}", input_path);
+        println!("💾 Output: {:?}", output_path);
+
+        // Find the Python Flask server (assuming it's in application_root/python_engine/)
+        let python_dir = app_root.join("python_engine");
+        
+        // Use curl to call the Flask API
+        let blast_type = request.blast_type.to_string();
+        
+        let output = Command::new("curl")
+            .arg("-X")
+            .arg("POST")
+            .arg("-F")
+            .arg(format!("file=@{}", input_path.display()))
+            .arg("-F")
+            .arg(format!("blastType={}", blast_type))
+            .arg("http://127.0.0.1:5001/run_blast")
+            .arg("-o")
+            .arg(&output_path)
+            .output()
             .await
-            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
+            .map_err(|e| BlastEngineError::ExecutionFailed(
+                format!("Failed to call Python API: {}", e)
+            ))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BlastEngineError::ExecutionFailed(
+                format!("Python API call failed: {}", stderr)
+            ));
+        }
+
+        println!("✅ Python BLAST completed successfully");
 
         Ok(BlastResult {
             job_id: request.job_id,
@@ -154,20 +191,92 @@ impl BlastEngine for RustProcessEngine {
     }
 }
 
+// -----------------------------
+// RUST PROCESS ENGINE
+// -----------------------------
+#[async_trait::async_trait]
+impl BlastEngine for RustProcessEngine {
+    fn name(&self) -> &'static str { "RUST engine" }
+
+    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
+        println!("🦀 RUST engine executing job {}", request.job_id);
+
+        let input_path = match request.input {
+            BlastInput::FilePath(ref path) => path,
+            _ => return Err(BlastEngineError::InvalidInput(
+                "RUST engine requires file input".to_string()
+            )),
+        };
+
+        // Get app root and build output path
+        let exe_path = env::current_exe()
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Cannot get exe path: {}", e)))?;
+        let app_root = exe_path.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
+        
+        let output_dir = app_root.join("outputs");
+        fs::create_dir_all(&output_dir).await
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Cannot create output dir: {}", e)))?;
+        
+        let output_path = output_dir.join(format!("rust_engine_{}.txt", request.job_id));
+        let engine_dir = app_root.join("engines").join("rust_engine");
+
+        let output = Command::new("cargo")
+            .args(["run", "--quiet", "--"])
+            .arg(request.job_id.to_string())
+            .arg(input_path)
+            .current_dir(&engine_dir)
+            .output()
+            .await
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Spawn failed: {}", e)))?;
+
+        println!("--- Engine stdout ---\n{}", String::from_utf8_lossy(&output.stdout));
+        println!("--- Engine stderr ---\n{}", String::from_utf8_lossy(&output.stderr));
+
+        if !output.status.success() {
+            return Err(BlastEngineError::ExecutionFailed("Engine failed".to_string()));
+        }
+
+        fs::write(&output_path, &output.stdout)
+            .await
+            .map_err(|e| BlastEngineError::ExecutionFailed(format!("Write failed: {}", e)))?;
+
+        Ok(BlastResult {
+            job_id: request.job_id,
+            status: ResultStatus::Success,
+            output: ResultOutput::FilePath(output_path),
+        })
+    }
+}
+
+// -----------------------------
+// DUMMY ENGINES
+// -----------------------------
 #[async_trait::async_trait]
 impl BlastEngine for SmallDummyEngine {
     fn name(&self) -> &'static str { "SmallDummyEngine" }
 
     async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
-        println!("SMALL engine executing job {}", request.job_id);
+        println!("🔧 SMALL engine executing job {}", request.job_id);
 
-        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
-        fs::create_dir_all(&output_path).await.unwrap();
-        output_path.push(format!("small_result_{}.txt", request.job_id));
+        let exe_path = env::current_exe()
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+        let app_root = exe_path.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
+        
+        let output_dir = app_root.join("outputs");
+        fs::create_dir_all(&output_dir).await
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+        
+        let output_path = output_dir.join(format!("small_result_{}.txt", request.job_id));
 
         fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
             .await
-            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
 
         Ok(BlastResult {
             job_id: request.job_id,
@@ -182,15 +291,24 @@ impl BlastEngine for LargeDummyEngine {
     fn name(&self) -> &'static str { "LargeDummyEngine" }
 
     async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
-        println!("LARGE engine executing job {}", request.job_id);
+        println!("🔧 LARGE engine executing job {}", request.job_id);
 
-        let mut output_path = PathBuf::from("/home/lukesal/BioClick/NucloFlo/application_root/outputs");
-        fs::create_dir_all(&output_path).await.unwrap();
-        output_path.push(format!("large_result_{}.txt", request.job_id));
+        let exe_path = env::current_exe()
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+        let app_root = exe_path.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
+        
+        let output_dir = app_root.join("outputs");
+        fs::create_dir_all(&output_dir).await
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
+        
+        let output_path = output_dir.join(format!("large_result_{}.txt", request.job_id));
 
         fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
             .await
-            .map_err(|_| BlastEngineError::ExecutionFailed(()))?;
+            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
 
         Ok(BlastResult {
             job_id: request.job_id,
@@ -199,8 +317,6 @@ impl BlastEngine for LargeDummyEngine {
         })
     }
 }
-
-
 
 // -----------------------------
 // SCHEDULER IMPLEMENTATION
@@ -213,6 +329,7 @@ impl Scheduler {
             join_handle: vec![],
             small_engine: Arc::new(SmallDummyEngine),
             large_engine: Arc::new(RustProcessEngine),
+            python_engine: Arc::new(PythonBlastEngine),
         }
     }
 
@@ -224,16 +341,13 @@ impl Scheduler {
 
             let request = BlastExecutionRequest {
                 job_id: job.id as u64,
-                blast_type: BlastType::BlastN,
+                blast_type: job.program.clone(),
                 input: BlastInput::FilePath(job.input_path.clone()),
                 parameters: BlastParameters,
             };
 
-            let engine = if job.id % 2 == 0 {
-                Arc::clone(&self.large_engine)
-            } else {
-                Arc::clone(&self.small_engine)
-            };
+            // Use Python engine for all jobs
+            let engine = Arc::clone(&self.python_engine);
 
             println!("Job {} assigned to engine: {}", job.id, engine.name());
 
@@ -262,16 +376,38 @@ impl Scheduler {
 // -----------------------------
 #[tokio::main]
 async fn main() {
+    // Get input file path from command line argument (from Electron UI)
+    let args: Vec<String> = env::args().collect();
+    
+    let input_path = if args.len() > 1 {
+        PathBuf::from(&args[1])
+    } else {
+        eprintln!("Error: No input file provided");
+        eprintln!("Usage: scheduler <path_to_fasta_file>");
+        std::process::exit(1);
+    };
+
+    // Verify input file exists
+    if !input_path.exists() {
+        eprintln!("Error: Input file does not exist: {:?}", input_path);
+        std::process::exit(1);
+    }
+
+    println!("Received input file: {:?}", input_path);
+
+    // Create job from the provided input path
+    // UI provides: input_path
+    // Scheduler fills in: id, name, schedule, program, database, state, output_path
     let jobs = vec![
         Job {
-            id: 2,
-            name: "Test BLAST Job".to_string(),
+            id: 1,
+            name: format!("BLAST Job for {}", input_path.file_name().unwrap().to_string_lossy()),
             schedule: std::time::Duration::from_secs(0),
-            program: BlastType::BlastN,
-            database: "nt".to_string(),
+            program: BlastType::BlastN,  // Default to BlastN
+            database: "nt".to_string(),   // Default to nucleotide database
             state: JobState::Queued,
-            input_path: PathBuf::from("../inputs/job_1.fasta"),
-            output_path: PathBuf::from("../../outputs/job_1_output.txt"),
+            input_path,
+            output_path: PathBuf::new(),  // Will be set by engine
         }
     ];
 
