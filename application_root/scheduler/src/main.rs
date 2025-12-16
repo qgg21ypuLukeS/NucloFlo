@@ -27,8 +27,6 @@ struct BlastExecutionRequest {
 }
 
 struct RustProcessEngine;
-struct SmallDummyEngine;
-struct LargeDummyEngine;
 struct PythonBlastEngine;
 
 struct BlastParameters;
@@ -36,8 +34,7 @@ struct BlastParameters;
 struct Scheduler {
     queue: Vec<Job>,
     join_handle: Vec<tokio::task::JoinHandle<()>>,
-    small_engine: Arc<dyn BlastEngine + Send + Sync>,
-    large_engine: Arc<dyn BlastEngine + Send + Sync>,
+    rust_engine: Arc<dyn BlastEngine + Send + Sync>,
     python_engine: Arc<dyn BlastEngine + Send + Sync>,
 }
 
@@ -251,72 +248,6 @@ impl BlastEngine for RustProcessEngine {
     }
 }
 
-// -----------------------------
-// DUMMY ENGINES
-// -----------------------------
-#[async_trait::async_trait]
-impl BlastEngine for SmallDummyEngine {
-    fn name(&self) -> &'static str { "SmallDummyEngine" }
-
-    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
-        println!("🔧 SMALL engine executing job {}", request.job_id);
-
-        let exe_path = env::current_exe()
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-        let app_root = exe_path.parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
-        
-        let output_dir = app_root.join("outputs");
-        fs::create_dir_all(&output_dir).await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-        
-        let output_path = output_dir.join(format!("small_result_{}.txt", request.job_id));
-
-        fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
-            .await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-
-        Ok(BlastResult {
-            job_id: request.job_id,
-            status: ResultStatus::Success,
-            output: ResultOutput::FilePath(output_path),
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl BlastEngine for LargeDummyEngine {
-    fn name(&self) -> &'static str { "LargeDummyEngine" }
-
-    async fn execute(&self, request: BlastExecutionRequest) -> Result<BlastResult, BlastEngineError> {
-        println!("🔧 LARGE engine executing job {}", request.job_id);
-
-        let exe_path = env::current_exe()
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-        let app_root = exe_path.parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .ok_or(BlastEngineError::ExecutionFailed("Cannot determine app root".to_string()))?;
-        
-        let output_dir = app_root.join("outputs");
-        fs::create_dir_all(&output_dir).await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-        
-        let output_path = output_dir.join(format!("large_result_{}.txt", request.job_id));
-
-        fs::write(&output_path, format!("Dummy BLAST result\nJob ID: {}\n", request.job_id))
-            .await
-            .map_err(|e| BlastEngineError::ExecutionFailed(e.to_string()))?;
-
-        Ok(BlastResult {
-            job_id: request.job_id,
-            status: ResultStatus::Success,
-            output: ResultOutput::FilePath(output_path),
-        })
-    }
-}
 
 // -----------------------------
 // SCHEDULER IMPLEMENTATION
@@ -327,8 +258,7 @@ impl Scheduler {
         Self {
             queue: jobs,
             join_handle: vec![],
-            small_engine: Arc::new(SmallDummyEngine),
-            large_engine: Arc::new(RustProcessEngine),
+            rust_engine: Arc::new(RustProcessEngine),
             python_engine: Arc::new(PythonBlastEngine),
         }
     }
