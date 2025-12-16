@@ -38,7 +38,7 @@ def run_blast():
         return send_file(
             io.BytesIO(result_xml.encode("utf-8")),
             as_attachment=True,
-            attachment_filename="blast_result.xml",
+            download_name="blast_result.xml",
             mimetype="application/xml"
         )
 
